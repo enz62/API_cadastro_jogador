@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException 
 from models import Usuario
-from dependencies import pegar_sessao
+from dependencies import pegar_sessao, verificar_token
 from main import bcrypt_context, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY
 from schemas import UsuarioSchema, LoginSchema
 from sqlalchemy.orm import Session
@@ -40,10 +40,25 @@ async def criar_conta(usuario_schema: UsuarioSchema,session:Session = Depends(pe
         raise HTTPException(status_code=400, detail = "E-mail de usuário ja cadastrado")
     else:
         senha_criptografada = bcrypt_context.hash(usuario_schema.senha)
-        novo_usuario = Usuario(usuario_schema.nome,usuario_schema.email,senha_criptografada, usuario_schema.ativo, usuario_schema.admin)
+        novo_usuario = Usuario(usuario_schema.nome,usuario_schema.email,senha_criptografada, usuario_schema.ativo, admin = False)
         session.add(novo_usuario)
         session.commit()
         return {"mensagem" : f"usuário cadastrado com sucesso {usuario_schema.email}"}
+
+@auth_router.put("/promover_admin/{id_usuario}")
+async def promover_admin(id_usuario: int , session: Session = Depends(pegar_sessao), usuario_logado: Usuario = Depends(verificar_token)):
+    if not usuario_logado.admin == True:
+        raise HTTPException(status_code = 401, detail = "Apenas Administradores podem promover outros usuários")
+    else:
+        usuario = session.query(Usuario).filter(Usuario.id == id_usuario).first()
+
+        if not usuario:
+            raise HTTPException(status_code = 400, detail = "Usuario selecionado não existe")
+
+        usuario.admin = True
+        session.commit()
+        return {"mensagem" : f"Usuario {usuario.id} promovido a administrador"}
+    
 
 @auth_router.post("/login")
 async def login(login_schema: LoginSchema,  session: Session = Depends(pegar_sessao)):
@@ -68,4 +83,40 @@ async def login_form(dados_formulario: OAuth2PasswordRequestForm = Depends(),  s
             "access_token" : access_token,
             "token_type" : "Bearer"
             }
-    
+
+@auth_router.post("/usuario/deletar/{id_usuario}")
+async def deletar_usuario(id_usuario: int , session: Session = Depends(pegar_sessao), usuario : Usuario = Depends(verificar_token)):
+    usuario_excluido = session.query(Usuario).filter(Usuario.id == id_usuario).first()
+    if not usuario_excluido:
+        raise HTTPException(status_code = 400 , detail = "usuario não encontrado")
+    else:
+        if usuario.id != id_usuario and usuario.admin == False:
+            raise HTTPException(status_code = 401, detail = "Você não tem permissão para realizar essa ação")
+        else:
+            total_admins = session.query(Usuario).filter(Usuario.admin == True).count()
+            if usuario_excluido.admin == True and total_admins <= 1:
+                raise HTTPException(status_code=400, detail="Não é possível remover o último administrador do sistema")
+            else:
+                session.delete(usuario_excluido)
+                session.commit()
+                return {
+                    "mensagem" : f"usuario {id_usuario} deletado com sucesso"
+                }
+
+@auth_router.put("/usuario/rebaixar/{id_usuario}")
+async def rebaixar_usuario(id_usuario : int , session : Session = Depends(pegar_sessao), usuario : Usuario = Depends(verificar_token)):
+    usuario_rebaixado = session.query(Usuario).filter(Usuario.id == id_usuario).first()
+    if not usuario_rebaixado:
+        raise HTTPException(status_code = 400 , detail = "O usuario selecionado não existe")
+    elif usuario.admin == False:
+        raise HTTPException(status_code = 401 , detail = "você não tem permissão para realizar essa ação")
+    else:
+        total_admins = session.query(Usuario).filter(Usuario.admin == True).count()
+        if usuario_rebaixado.admin == True and total_admins <= 1:
+            raise HTTPException(status_code=400, detail="Não é possível remover o último administrador do sistema")
+        else:
+            usuario_rebaixado.admin = False
+            session.commit()
+            return {
+                "mensagem" : f"o usuario {id_usuario} foi rebaixado para um usuário normal"
+            } 
